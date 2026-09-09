@@ -1,0 +1,17 @@
+# Auto-Data Pro : Excel Automation Dashboard
+# Pins the enterprise light theme so the dashboard renders identically on every
+# machine, regardless of the operator's Windows / browser dark-mode preference.
+
+[theme]
+base = "light"
+primaryColor = "#10B981"
+backgroundColor = "#F8FAFC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1E293B"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+port = 8501
