@@ -353,13 +353,88 @@ html, body, [class*="css"], .stApp { font-family: 'Inter', 'Segoe UI', sans-seri
 .stApp { background: var(--adp-bg); }
 
 /* ---------------- Hide the stock Streamlit chrome ---------------------- */
+/* Target the app chrome by test id, never by the bare `header` tag: Streamlit
+   also renders the sidebar's own collapse control inside a <header>, so a tag
+   selector hides the only way to reopen a collapsed sidebar. */
 #MainMenu { visibility: hidden; }
-header    { visibility: hidden; height: 0 !important; }
-footer    { visibility: hidden; height: 0 !important; }
-[data-testid="stToolbar"],
-[data-testid="stDecoration"],
-[data-testid="stStatusWidget"],
-[data-testid="stHeader"] { display: none !important; }
+footer { visibility: hidden; height: 0 !important; }
+[data-testid="stDecoration"] { display: none !important; }
+/* The toolbar must keep its layout box: the button that reopens a collapsed
+   sidebar is rendered inside it, and display:none on the parent leaves that
+   button 0x0 and unclickable. Hide the toolbar's other children instead. */
+[data-testid="stToolbar"] {
+    display: flex !important;
+    background: transparent !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+}
+[data-testid="stToolbar"] [data-testid="stMainMenu"],
+[data-testid="stToolbar"] [data-testid="stStatusWidget"],
+[data-testid="stStatusWidget"] { display: none !important; }
+/* Collapse the app header to nothing but keep it in the layout, because the
+   control that reopens a collapsed sidebar is rendered inside it. */
+[data-testid="stHeader"] {
+    background: transparent !important;
+    height: 0 !important;
+    min-height: 0 !important;
+}
+
+/* ---------------- Keep the sidebar and its controls reachable ---------- */
+[data-testid="stSidebar"] {
+    visibility: visible !important;
+    display: flex !important;
+}
+[data-testid="stSidebarHeader"],
+[data-testid="stSidebarContent"],
+[data-testid="stSidebarUserContent"] {
+    visibility: visible !important;
+    height: auto !important;
+}
+/* The collapse chevron inside the sidebar. */
+[data-testid="stSidebarCollapseButton"] {
+    visibility: visible !important;
+    display: flex !important;
+    height: auto !important;
+    opacity: 1 !important;
+}
+[data-testid="stSidebarCollapseButton"] button {
+    visibility: visible !important;
+    opacity: 1 !important;
+    color: var(--adp-navy) !important;
+}
+/* The button that brings a collapsed sidebar back. Pinned with fixed
+   positioning so it renders at a usable size even though its toolbar parent is
+   collapsed to zero height. Streamlit shows it only while the sidebar is
+   collapsed, so it never overlaps the open sidebar. */
+[data-testid="stExpandSidebarButton"],
+[data-testid="stSidebarCollapsedControl"] {
+    visibility: visible !important;
+    display: flex !important;
+    opacity: 1 !important;
+    align-items: center;
+    justify-content: center;
+    position: fixed !important;
+    top: 12px; left: 12px;
+    width: 38px !important;
+    height: 38px !important;
+    background: var(--adp-card) !important;
+    border: 1px solid var(--adp-line) !important;
+    border-radius: 9px !important;
+    box-shadow: var(--adp-shadow);
+    color: var(--adp-navy) !important;
+    z-index: 1001;
+}
+[data-testid="stExpandSidebarButton"]:hover,
+[data-testid="stSidebarCollapsedControl"]:hover {
+    background: var(--adp-rail, #F8FAFC) !important;
+    border-color: var(--adp-navy) !important;
+}
+[data-testid="stExpandSidebarButton"] svg,
+[data-testid="stSidebarCollapsedControl"] svg {
+    color: var(--adp-navy) !important;
+    fill: var(--adp-navy) !important;
+}
 .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 1500px; }
 
 /* ---------------- Header bar ------------------------------------------ */
@@ -703,7 +778,9 @@ def init_state() -> None:
         "clean_df": None,        # processed DataFrame
         "result": None,          # dict of processing metrics
         "history": [],           # list of previous run dicts
-        "nav": "Dashboard",
+        "nav": "Dashboard",       # landing page on a fresh session
+        "seeded": False,          # sample auto-load runs once per session
+        "is_demo": False,         # True while showing the built-in sample
         "vat_rate": VAT_RATE_DEFAULT,
         "opt_flag_missing_id": True,
         "opt_flag_missing_status": True,
@@ -736,6 +813,37 @@ def init_state() -> None:
 
 
 init_state()
+
+
+def seed_first_visit() -> None:
+    """
+    Open on a populated dashboard rather than an empty file prompt.
+
+    A first visit stages the built-in sample and runs it, so the landing view
+    shows real metrics, a filled preview and working exports. The moment an
+    operator uploads their own file this is replaced, and it never runs again in
+    the same session.
+    """
+    if st.session_state.get("seeded"):
+        return
+    st.session_state["seeded"] = True
+    if st.session_state.get("raw_df") is not None:
+        return
+    try:
+        sample = build_sample_dataset()
+        buffer = io.BytesIO()
+        sample.to_csv(buffer, index=False)
+        stage_dataframe(sample, "Sept_Raw_Sales_Sample.xlsx", buffer.tell(), "sample")
+        clean, result = run_automation_engine(sample, current_options())
+        st.session_state["clean_df"] = clean
+        st.session_state["result"] = result
+        st.session_state["is_demo"] = True
+    except Exception:
+        # A failed seed must never stop the app loading; the operator simply
+        # gets the empty upload state instead.
+        st.session_state["raw_df"] = None
+        st.session_state["raw_meta"] = None
+
 
 
 # --------------------------------------------------------------------------- #
@@ -3226,6 +3334,7 @@ def stage_dataframe(frame: pd.DataFrame, name: str, size_bytes: int, source: str
     }
     st.session_state["clean_df"] = None
     st.session_state["result"] = None
+    st.session_state["is_demo"] = (source == "sample")
 
 
 def execute_engine() -> bool:
@@ -3297,6 +3406,11 @@ def panel_upload() -> None:
                         st.error(f"Could not read **{uploaded.name}**: {exc}")
 
             meta = st.session_state["raw_meta"]
+            if meta and st.session_state.get("is_demo"):
+                st.info(
+                    "Showing the built-in sample dataset so the dashboard opens "
+                    "with live figures. Upload your own file to replace it.",
+                    icon=":material/science:")
             if meta:
                 st.markdown(
                     f"""
@@ -4220,9 +4334,12 @@ PAGES = {
 
 
 def main() -> None:
+    # Everything the seed needs is defined by the time main() runs.
+    seed_first_visit()
     render_header()
     choice = render_sidebar()
-    PAGES.get(choice, page_dashboard)()
+    # Unknown or missing selection always falls back to the main dashboard.
+    PAGES.get(choice or "Dashboard", page_dashboard)()
 
 
 if __name__ == "__main__":
