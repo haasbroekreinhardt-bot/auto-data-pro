@@ -75,20 +75,97 @@ NAV_ITEMS = [
 ]
 
 # The 12 business rules applied by the automation engine.
+# --------------------------------------------------------------------------- #
+#  RULE LIBRARY
+#  Severity drives behaviour, not just colour:
+#    Info     - the rule repairs the value silently, no flag is raised.
+#    Warning  - the row is flagged for review but still counts as processed.
+#    Critical - the row is flagged AND marked blocked, so it is excluded from
+#               the clean set and can be filtered out before export.
+#  "needs" lists the canonical columns a rule requires. A rule whose columns are
+#  absent from the uploaded file reports as Not applicable instead of running.
+# --------------------------------------------------------------------------- #
+
+CAT_FINANCE = "Financial & Tax"
+CAT_INTEGRITY = "Data Integrity"
+CAT_CRM = "Customer & CRM"
+CAT_LOGISTICS = "Logistics & Fulfillment"
+CAT_COMPLIANCE = "Compliance & Security"
+RULE_CATEGORIES = [CAT_FINANCE, CAT_INTEGRITY, CAT_CRM, CAT_LOGISTICS, CAT_COMPLIANCE]
+
+SEV_CRITICAL = "Critical (Block Processing)"
+SEV_WARNING = "Warning (Flag Only)"
+SEV_INFO = "Info (Auto-Fix)"
+RULE_SEVERITIES = [SEV_CRITICAL, SEV_WARNING, SEV_INFO]
+
 RULE_LIBRARY = [
-    ("R01", "Whitespace & control-character trim", True),
-    ("R02", "Blank row removal", True),
-    ("R03", "Date standardisation (YYYY-MM-DD)", True),
-    ("R04", "Invalid / unparseable date flagging", True),
-    ("R05", "Client ID normalisation", True),
-    ("R06", "Missing Client ID flag", True),
-    ("R07", "Status vocabulary normalisation", True),
-    ("R08", "Missing / unknown status flag", True),
-    ("R09", "ZAR currency parsing (strip R, spaces, commas)", True),
-    ("R10", "Zero / negative amount flag", True),
-    ("R11", "VAT @ 15% and Total Inc VAT calculation", True),
-    ("R12", "Bank reconciliation & duplicate-entry check", True),
+    {"code": "R01", "name": "Whitespace & control-character trim",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": []},
+    {"code": "R02", "name": "Blank row removal",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": []},
+    {"code": "R03", "name": "Date standardisation (YYYY-MM-DD)",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": ["Date"]},
+    {"code": "R04", "name": "Invalid / unparseable date flagging",
+     "cat": CAT_INTEGRITY, "sev": SEV_WARNING, "default": True, "needs": ["Date"]},
+    {"code": "R05", "name": "Client ID normalisation",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": ["Client_ID"]},
+    {"code": "R06", "name": "Missing Client ID flag",
+     "cat": CAT_INTEGRITY, "sev": SEV_CRITICAL, "default": True, "needs": ["Client_ID"]},
+    {"code": "R07", "name": "Status vocabulary normalisation",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": ["Status"]},
+    {"code": "R08", "name": "Missing / unassigned status flag",
+     "cat": CAT_INTEGRITY, "sev": SEV_WARNING, "default": True, "needs": ["Status"]},
+    {"code": "R09", "name": "Currency parsing (strip symbol, spaces, separators)",
+     "cat": CAT_FINANCE, "sev": SEV_INFO, "default": True, "needs": ["Amount"]},
+    {"code": "R10", "name": "Zero / negative amount flag",
+     "cat": CAT_FINANCE, "sev": SEV_WARNING, "default": True, "needs": ["Amount"]},
+    {"code": "R11", "name": "VAT calculation and Total Inc VAT",
+     "cat": CAT_FINANCE, "sev": SEV_INFO, "default": True, "needs": ["Amount"]},
+    {"code": "R12", "name": "Bank reconciliation & duplicate-entry check",
+     "cat": CAT_FINANCE, "sev": SEV_WARNING, "default": True, "needs": ["Amount"]},
+
+    {"code": "R13", "name": "Tax ID / VAT number format verification",
+     "cat": CAT_FINANCE, "sev": SEV_CRITICAL, "default": True, "needs": ["VAT_Number"]},
+    {"code": "R14", "name": "High-value transaction approval flag",
+     "cat": CAT_FINANCE, "sev": SEV_WARNING, "default": True, "needs": ["Amount"]},
+    {"code": "R15", "name": "Credit limit breach flag",
+     "cat": CAT_FINANCE, "sev": SEV_CRITICAL, "default": True,
+     "needs": ["Amount", "Credit_Limit"]},
+    {"code": "R16", "name": "Email & phone number format normalisation",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": ["Email|Phone"]},
+    {"code": "R17", "name": "Duplicate entry detection (date + entity + amount)",
+     "cat": CAT_INTEGRITY, "sev": SEV_WARNING, "default": True,
+     "needs": ["Date", "Amount"]},
+    {"code": "R18", "name": "Proper case & whitespace trimming on names",
+     "cat": CAT_INTEGRITY, "sev": SEV_INFO, "default": True, "needs": ["Company"]},
+    {"code": "R19", "name": "Missing required contact field flag",
+     "cat": CAT_CRM, "sev": SEV_WARNING, "default": True, "needs": ["Email|Phone"]},
+    {"code": "R20", "name": "Blacklisted / restricted entity check",
+     "cat": CAT_COMPLIANCE, "sev": SEV_CRITICAL, "default": True, "needs": ["Client_ID"]},
+    {"code": "R21", "name": "Postal code & shipping address validation",
+     "cat": CAT_LOGISTICS, "sev": SEV_WARNING, "default": True,
+     "needs": ["Postal_Code|Address"]},
+    {"code": "R22", "name": "Future & out-of-range date boundary flag",
+     "cat": CAT_COMPLIANCE, "sev": SEV_CRITICAL, "default": True, "needs": ["Date"]},
 ]
+
+RULES_BY_CODE = {r["code"]: r for r in RULE_LIBRARY}
+
+# Canonical schema materialised on every run, in output order.
+CANONICAL_COLUMNS = [
+    "Date", "Client_ID", "Reference", "Status", "Amount", "Notes",
+    "VAT_Number", "Credit_Limit", "Email", "Phone", "Company",
+    "Postal_Code", "Address",
+]
+
+
+def rule_applicable(rule: dict, mapping: dict) -> bool:
+    """True when the uploaded file carries the columns this rule needs."""
+    for need in rule["needs"]:
+        # "A|B" means either column satisfies the requirement.
+        if not any(part in mapping for part in need.split("|")):
+            return False
+    return True
 
 # Canonical column -> accepted raw header aliases (normalised, lowercase).
 COLUMN_ALIASES = {
@@ -112,6 +189,30 @@ COLUMN_ALIASES = {
         "line_total", "excl_vat", "amount_excl_vat",
     ],
     "Notes": ["notes", "note", "comment", "comments", "remarks", "memo"],
+    "VAT_Number": [
+        "vat_number", "vat_no", "vat", "vat_reg", "vat_registration", "tax_id",
+        "taxid", "tax_number", "tax_reg_no", "vat_reg_no",
+    ],
+    "Credit_Limit": [
+        "credit_limit", "creditlimit", "credit_cap", "limit", "max_credit",
+        "credit_ceiling", "approved_limit",
+    ],
+    "Email": ["email", "email_address", "e_mail", "contact_email", "mail"],
+    "Phone": [
+        "phone", "phone_number", "telephone", "tel", "mobile", "cell",
+        "cellphone", "contact_number", "msisdn",
+    ],
+    "Company": [
+        "company", "company_name", "client_name", "customer_name", "entity",
+        "entity_name", "trading_name", "business_name",
+    ],
+    "Postal_Code": [
+        "postal_code", "postcode", "post_code", "zip", "zip_code", "pin_code",
+    ],
+    "Address": [
+        "address", "shipping_address", "delivery_address", "street_address",
+        "ship_to", "delivery_addr", "physical_address",
+    ],
     "Reference": [
         "reference", "ref", "bank_ref", "bank_reference", "invoice",
         "invoice_no", "invoice_number", "doc_no", "document_no",
@@ -149,6 +250,8 @@ FLAG_BAD_DATE = "INVALID DATE"
 FLAG_BAD_AMOUNT = "INVALID AMOUNT"
 FLAG_NEGATIVE = "NEGATIVE AMOUNT"
 FLAG_ZERO = "ZERO AMOUNT"
+# Legacy flag: no longer raised - an unreconciled row is a baseline state
+# recorded in Recon_Status, not a validation error.
 FLAG_UNRECONCILED = "UNRECONCILED"
 
 # A row carrying any of these words is business-flagged for attention: it is
@@ -161,10 +264,22 @@ RECON_NONE = "Unreconciled"       # reference column exists but this row is blan
 RECON_SKIPPED = "Not Checked"     # source file carries no reference column at all
 
 # Internal bookkeeping columns, never written to an export or preview.
-HELPER_COLUMNS = ["Flagged", "Flag_Count", "Needs_Review"]
+HELPER_COLUMNS = ["Flagged", "Flag_Count", "Needs_Review", "Blocked"]
 FLAG_RECON_MISMATCH = "RECON MISMATCH"
 FLAG_DUPLICATE = "DUPLICATE ENTRY"
 FLAG_BELOW_THRESHOLD = "BELOW THRESHOLD"
+FLAG_BAD_VAT_NO = "INVALID VAT NUMBER"
+FLAG_HIGH_VALUE = "APPROVAL REQUIRED"
+FLAG_CREDIT_BREACH = "CREDIT LIMIT BREACH"
+# Distinct from R12's exact-match DUPLICATE ENTRY: R17 matches on
+# date + entity + amount only, so it catches same-day re-keys that carry
+# a different reference.
+FLAG_DUP_WINDOW = "SAME-DAY DUPLICATE"
+FLAG_NO_CONTACT = "NO CONTACT DETAILS"
+FLAG_BLACKLISTED = "RESTRICTED ENTITY"
+FLAG_BAD_ADDRESS = "INCOMPLETE ADDRESS"
+FLAG_FUTURE_DATE = "FUTURE DATE"
+FLAG_STALE_DATE = "STALE DATE"
 
 # Every validation flag the engine can raise - used to render coral pills in the
 # preview table and to separate flags from free-text notes carried in from source.
@@ -172,6 +287,15 @@ KNOWN_FLAGS = {
     FLAG_MISSING_ID, FLAG_MISSING_STATUS, FLAG_UNKNOWN_STATUS, FLAG_BAD_DATE,
     FLAG_BAD_AMOUNT, FLAG_NEGATIVE, FLAG_ZERO, FLAG_UNRECONCILED,
     FLAG_RECON_MISMATCH, FLAG_DUPLICATE, FLAG_BELOW_THRESHOLD,
+    FLAG_BAD_VAT_NO, FLAG_HIGH_VALUE, FLAG_CREDIT_BREACH, FLAG_DUP_WINDOW,
+    FLAG_NO_CONTACT, FLAG_BLACKLISTED, FLAG_BAD_ADDRESS, FLAG_FUTURE_DATE,
+    FLAG_STALE_DATE,
+}
+
+# Flags raised by a Critical rule: the row is blocked as well as flagged.
+CRITICAL_FLAGS = {
+    FLAG_MISSING_ID, FLAG_BAD_VAT_NO, FLAG_CREDIT_BREACH, FLAG_BLACKLISTED,
+    FLAG_FUTURE_DATE, FLAG_STALE_DATE,
 }
 
 OUTPUT_COLUMNS = [
@@ -207,6 +331,7 @@ CUSTOM_CSS = """
     --adp-ink:        #1E293B;   /* high-contrast body text */
     --adp-slate:      #1E293B;
     --adp-muted:      #475569;   /* high-contrast secondary text */
+    --adp-faint:      #7B8AA3;   /* baseline / non-actionable labels */
     --adp-line:       #E2E8F0;   /* subtle light grey border */
     --adp-bg:         #F8FAFC;   /* Off-White background */
     --adp-card:       #FFFFFF;
@@ -399,8 +524,24 @@ table.adp-table td.num { text-align: right; font-variant-numeric: tabular-nums; 
 .adp-pill-REVIEW    { background: var(--adp-amber-bg); color: #92400E; }
 /* Free-text notes carried in from the source file are plain text, not pills,
    so that badges stay reserved for status and validation flags. */
+.adp-rule-head {
+    font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase;
+    color: var(--adp-muted); padding-bottom: 2px;
+}
+.adp-rule-rule { border-bottom: 2px solid var(--adp-navy); margin-bottom: 6px; }
+.adp-rule-code {
+    font-family: 'Consolas','Courier New',monospace; font-size: 12.5px;
+    font-weight: 700; color: var(--adp-navy); padding-top: 6px;
+}
+.adp-rule-name { font-size: 13px; color: var(--adp-ink); padding-top: 5px; }
+.adp-rule-na { font-size: 11px; color: var(--adp-faint); font-style: italic; }
 .adp-note-text {
     color: var(--adp-ink); font-weight: 400; font-size: 12.2px;
+    white-space: nowrap;
+}
+/* Baseline state, deliberately quiet - never competes with an error pill. */
+.adp-muted-label {
+    color: var(--adp-faint, #7B8AA3); font-weight: 500; font-size: 11.5px;
     white-space: nowrap;
 }
 table.adp-table td.notes-cell { text-align: left; }
@@ -578,6 +719,15 @@ def init_state() -> None:
         "opt_outlier_sigma": 3.0,
         "opt_flag_nulls": True,
         "opt_flag_outliers": True,
+        "opt_high_value": 250000.0,
+        "opt_blacklist": "",
+        "opt_date_horizon": 0,
+        "opt_stale_days": 1095,
+        "rule_enabled": {r["code"]: r["default"] for r in RULE_LIBRARY},
+        "lib_category": "All Categories",
+        "lib_severity": "All Severities",
+        "lib_status": "All Statuses",
+        "lib_search": "",
         "boot_time": datetime.now(),
     }
     for key, value in defaults.items():
@@ -776,8 +926,10 @@ def map_columns(frame: pd.DataFrame) -> tuple[pd.DataFrame, dict, list]:
                 used.add(original)
                 break
 
+    # Every canonical column is materialised, mapped or not, so a rule can read
+    # it unconditionally; rule_applicable() decides whether the rule runs.
     out = pd.DataFrame(index=frame.index)
-    for canonical in ("Date", "Client_ID", "Reference", "Status", "Amount", "Notes"):
+    for canonical in CANONICAL_COLUMNS:
         source = mapping.get(canonical)
         out[canonical] = frame[source] if source else pd.NA
 
@@ -1352,11 +1504,14 @@ def run_automation_engine(raw: pd.DataFrame, options: dict) -> tuple[pd.DataFram
                 [RECON_NONE if missing else RECON_OK for missing in no_ref],
                 index=frame.index,
             )
-            unreconciled = add_flag(no_ref, FLAG_UNRECONCILED)
+            # Recorded on the row, never flagged: a missing bank reference is a
+            # normal operational state, not a defect in the data. Only a real
+            # discrepancy (below) counts as an exception.
+            unreconciled = int(no_ref.sum())
             reconciled = len(frame) - unreconciled
-            note("warn" if unreconciled else "ok",
+            note("ok",
                  f"R12a Bank reconciliation | {reconciled:,} reconciled, "
-                 f"{unreconciled:,} unassigned")
+                 f"{unreconciled:,} unreconciled (recorded, not flagged)")
         else:
             # No reference column in the source at all - flagging every row would
             # be noise, so the per-row check is skipped and reported once.
@@ -1384,6 +1539,135 @@ def run_automation_engine(raw: pd.DataFrame, options: dict) -> tuple[pd.DataFram
              f"R12b Duplicate entries flagged (retained): {duplicates:,}")
     applied.append("R12")
 
+    # ---- R13-R22  Extended business validation ------------------------------------ #
+    enabled = options.get("rules") or {r["code"]: r["default"] for r in RULE_LIBRARY}
+
+    def rule_on(code: str) -> bool:
+        """A rule runs only when enabled and the file carries its columns."""
+        return bool(enabled.get(code, True)) and rule_applicable(RULES_BY_CODE[code], mapping)
+
+    # R13  Tax ID / VAT number format verification.
+    if rule_on("R13"):
+        vat_no = frame["VAT_Number"].astype("string").str.replace(r"[\s-]", "", regex=True)
+        # South African VAT numbers are 10 digits beginning with 4; a generic
+        # 9-15 digit tax id is accepted for other jurisdictions.
+        valid = vat_no.str.match(r"^(4\d{9}|\d{9,15})$").fillna(False)
+        present = vat_no.notna() & (vat_no.fillna("") != "")
+        bad_vat = add_flag(present & ~valid, FLAG_BAD_VAT_NO)
+        applied.append("R13")
+        note("err" if bad_vat else "ok",
+             f"R13 Tax ID / VAT number format | {bad_vat:,} malformed")
+
+    # R14  High-value transaction approval.
+    if rule_on("R14"):
+        threshold = float(options.get("high_value", 0.0) or 0.0)
+        if threshold > 0:
+            high = add_flag(frame["Amount"] > threshold, FLAG_HIGH_VALUE)
+            applied.append("R14")
+            note("warn" if high else "ok",
+                 f"R14 High-value transactions over {fmt_money(threshold)}: {high:,}")
+
+    # R15  Credit limit breach - per-client exposure against the stated limit.
+    if rule_on("R15"):
+        limits = frame["Credit_Limit"].map(parse_amount)
+        exposure = frame.groupby(frame["Client_ID"].fillna(""))["Amount"].transform("sum")
+        breach = add_flag((limits.notna()) & (limits > 0) & (exposure > limits),
+                          FLAG_CREDIT_BREACH)
+        applied.append("R15")
+        note("err" if breach else "ok",
+             f"R15 Credit limit breaches: {breach:,}")
+
+    # R16  Email and phone normalisation (auto-fix, no flag).
+    if rule_on("R16"):
+        fixed = 0
+        if "Email" in mapping:
+            before = frame["Email"].astype("string")
+            frame["Email"] = before.str.replace(r"\s+", "", regex=True).str.lower()
+            fixed += int((before.fillna("") != frame["Email"].fillna("")).sum())
+        if "Phone" in mapping:
+            before = frame["Phone"].astype("string")
+            digits = before.str.replace(r"[^\d+]", "", regex=True)
+            # Local SA numbers normalise to +27 international format.
+            digits = digits.str.replace(r"^0", "+27", regex=True)
+            digits = digits.str.replace(r"^27", "+27", regex=True)
+            frame["Phone"] = digits
+            fixed += int((before.fillna("") != frame["Phone"].fillna("")).sum())
+        applied.append("R16")
+        note("ok", f"R16 Email / phone normalised | {fixed:,} value(s) rewritten")
+
+    # R17  Duplicate entry within a 24-hour window on date + entity + amount.
+    if rule_on("R17"):
+        entity = frame["Client_ID"].fillna("") if "Client_ID" in mapping else pd.Series("", index=frame.index)
+        key = (pd.to_datetime(frame["Date"], errors="coerce").dt.floor("D").astype(str)
+               + "|" + entity.astype(str) + "|" + frame["Amount"].round(2).astype(str))
+        window_dupes = add_flag(key.duplicated(keep="first"), FLAG_DUP_WINDOW)
+        applied.append("R17")
+        note("warn" if window_dupes else "ok",
+             f"R17 Same-day duplicate entries: {window_dupes:,}")
+
+    # R18  Proper case and whitespace on entity names (auto-fix).
+    if rule_on("R18"):
+        before = frame["Company"].astype("string")
+        cleaned = before.str.replace(r"\s+", " ", regex=True).str.strip().str.title()
+        # Keep common company suffixes upper-cased after title-casing.
+        for token, fixed_form in (("Pty", "(Pty)"), ("Ltd", "Ltd"), ("Cc", "CC"),
+                                  ("Inc", "Inc"), ("Npc", "NPC")):
+            cleaned = cleaned.str.replace(rf"\b{token}\b", fixed_form, regex=True)
+        changed = int((before.fillna("") != cleaned.fillna("")).sum())
+        frame["Company"] = cleaned
+        applied.append("R18")
+        note("ok", f"R18 Entity names standardised | {changed:,} rewritten")
+
+    # R19  Missing required contact field.
+    if rule_on("R19"):
+        def _blank(col):
+            if col not in mapping:
+                return pd.Series(True, index=frame.index)
+            return frame[col].isna() | (frame[col].astype("string").fillna("") == "")
+        no_contact = add_flag(_blank("Email") & _blank("Phone"), FLAG_NO_CONTACT)
+        applied.append("R19")
+        note("warn" if no_contact else "ok",
+             f"R19 Rows with neither email nor phone: {no_contact:,}")
+
+    # R20  Blacklisted / restricted entity check.
+    if rule_on("R20"):
+        raw_list = str(options.get("blacklist", "") or "")
+        blocked = {t.strip().upper() for t in re.split(r"[,\n;]+", raw_list) if t.strip()}
+        if blocked:
+            hits = add_flag(frame["Client_ID"].astype("string").str.upper().isin(blocked),
+                            FLAG_BLACKLISTED)
+            applied.append("R20")
+            note("err" if hits else "ok",
+                 f"R20 Restricted entities matched: {hits:,} against {len(blocked)} blocked id(s)")
+
+    # R21  Postal code and shipping address completeness.
+    if rule_on("R21"):
+        incomplete = pd.Series(False, index=frame.index)
+        if "Postal_Code" in mapping:
+            code = frame["Postal_Code"].astype("string").str.replace(r"\s", "", regex=True)
+            incomplete |= code.isna() | (code.fillna("") == "") | ~code.str.match(r"^\d{4,10}$").fillna(False)
+        if "Address" in mapping:
+            addr = frame["Address"].astype("string").fillna("").str.strip()
+            # An address needs a street line, not just a town name.
+            incomplete |= (addr == "") | (addr.str.len() < 8)
+        bad_addr = add_flag(incomplete, FLAG_BAD_ADDRESS)
+        applied.append("R21")
+        note("warn" if bad_addr else "ok",
+             f"R21 Incomplete delivery addresses: {bad_addr:,}")
+
+    # R22  Future and out-of-range date boundaries.
+    if rule_on("R22"):
+        as_dt = pd.to_datetime(frame["Date"], errors="coerce")
+        horizon = int(options.get("date_horizon", 0) or 0)
+        stale_days = int(options.get("stale_days", 1095) or 1095)
+        today = pd.Timestamp(datetime.now().date())
+        future = add_flag(as_dt > today + pd.Timedelta(days=horizon), FLAG_FUTURE_DATE)
+        stale = add_flag(as_dt < today - pd.Timedelta(days=stale_days), FLAG_STALE_DATE)
+        applied.append("R22")
+        note("err" if (future or stale) else "ok",
+             f"R22 Date boundaries | {future:,} post-dated, {stale:,} older than "
+             f"{stale_days:,} days")
+
     # ---- Compose the Notes column ------------------------------------------------ #
     existing_notes = frame["Notes"].fillna("").astype(str).tolist()
     composed = []
@@ -1396,10 +1680,13 @@ def run_automation_engine(raw: pd.DataFrame, options: dict) -> tuple[pd.DataFram
     frame["Notes"] = composed
     frame["Flagged"] = [bool(f) for f in flags]
     frame["Flag_Count"] = [len(f) for f in flags]
+    # A Critical rule blocks the row: still exported, but excluded from the
+    # clean set and filterable on its own in the preview.
+    frame["Blocked"] = [any(f in CRITICAL_FLAGS for f in row) for row in flags]
     frame = mark_needs_review(frame)
 
     # ---- Final ordering ----------------------------------------------------------- #
-    helper_cols = ["Flagged", "Flag_Count", "Needs_Review"]
+    helper_cols = list(HELPER_COLUMNS)
     extra_cols = [c for c in frame.columns
                   if c not in OUTPUT_COLUMNS + helper_cols]
     frame = frame[OUTPUT_COLUMNS + extra_cols + helper_cols]
@@ -1453,6 +1740,7 @@ def run_automation_engine(raw: pd.DataFrame, options: dict) -> tuple[pd.DataFram
         "blank_dropped": blank_dropped,
         "dup_dropped": dup_dropped,
         "flagged": flagged_count,
+        "blocked": int(frame["Blocked"].sum()),
         "clean": len(frame) - flagged_count,
         "revenue": revenue,
         "vat_total": vat_total,
@@ -2260,10 +2548,12 @@ def build_summary_pdf(frame: pd.DataFrame, result: dict, source_name: str) -> by
     add("5.  BUSINESS RULES APPLIED", 11, True, NAVY_RGB)
     add()
     codes = set(result["rules_applied"])
-    for code, label, _ in RULE_LIBRARY:
+    for rule in RULE_LIBRARY:
+        code = rule["code"]
         mark = "[X]" if code in codes else "[ ]"
         colour = BLACK if code in codes else SLATE
-        add(f"    {mark} {code}  {label}", 9.5, False, colour)
+        sev = rule["sev"].split(" (")[0]
+        add(f"    {mark} {code}  {rule['name'][:44]:<46}{sev}", 9.5, False, colour)
 
     # Paginate.
     pages: list[list[tuple]] = []
@@ -2657,10 +2947,16 @@ def render_preview_table(frame: pd.DataFrame, limit: int = 250,
                 cells.append(f'<td><span class="adp-pill adp-pill-{pill}">'
                              f'{esc(status)}</span></td>')
             elif column == "Recon_Status":
+                # Only a confirmed match earns a badge. "Unreconciled" and
+                # "Not Checked" are baseline states, so they read as quiet
+                # labels rather than competing with real error pills.
                 recon = str(value or RECON_SKIPPED)
-                pill = {RECON_OK: "CLEAN", RECON_NONE: "FLAG"}.get(recon, "CANCELLED")
-                cells.append(f'<td><span class="adp-pill adp-pill-{pill}">'
-                             f'{esc(recon)}</span></td>')
+                if recon == RECON_OK:
+                    cells.append('<td><span class="adp-pill adp-pill-CLEAN">'
+                                 f'{esc(recon)}</span></td>')
+                else:
+                    cells.append('<td><span class="adp-muted-label">'
+                                 f'{esc(recon)}</span></td>')
             elif column == "Notes":
                 # Lead badge states the row verdict: coral flags for validation
                 # errors, amber NEEDS REVIEW when the row asks for attention,
@@ -2673,9 +2969,13 @@ def render_preview_table(frame: pd.DataFrame, limit: int = 250,
                         if needs_review else
                         '<span class="adp-pill adp-pill-CLEAN">CLEAN</span>'
                     )
+                # Deduplicate while preserving order, so a tag that appears in
+                # both the engine flags and the source notes renders once.
+                seen_parts = set()
                 for part in (t.strip() for t in str(value or "").split("|")):
-                    if not part:
+                    if not part or part in seen_parts:
                         continue
+                    seen_parts.add(part)
                     if part in KNOWN_FLAGS:
                         tags.append('<span class="adp-pill adp-pill-FLAG">'
                                     f'{esc(part)}</span>')
@@ -2749,18 +3049,67 @@ def df_to_html(frame: pd.DataFrame, max_rows: int = 500,
     )
 
 
-def render_table(frame: pd.DataFrame, height: int | None = None,
-                 max_rows: int = 500) -> None:
-    """st.dataframe when pyarrow is available, otherwise an HTML table."""
+# Streamlit validates height with validate_height(), which accepts a positive
+# int or one of the allowed strings ("auto", "stretch", "content") and raises
+# StreamlitInvalidHeightError for everything else - None included. The default
+# for st.dataframe is the string "auto", NOT None, so automatic sizing means
+# passing "auto" rather than passing None or omitting the argument.
+MIN_TABLE_HEIGHT = 60
+AUTO_HEIGHT = "auto"
+
+
+def safe_height(height, fallback=AUTO_HEIGHT):
+    """
+    Coerce any caller-supplied height into a value Streamlit will accept.
+
+    Returns a positive int, or `fallback` ("auto" for tables, an int for charts
+    that need a concrete pixel height). Booleans are rejected explicitly: bool
+    subclasses int, so True would otherwise become a 1-pixel element.
+    """
+    if isinstance(height, str):
+        # Pass a sentinel through only when the caller can accept one. Charts
+        # pass an int fallback and validate without "auto"/"content", so any
+        # string resolves to their pixel default instead.
+        if not isinstance(fallback, str):
+            return fallback
+        return height if height in ("auto", "stretch", "content") else fallback
+    if height is None or isinstance(height, bool):
+        return fallback
+    try:
+        value = int(height)
+    except (TypeError, ValueError):
+        return fallback
+    if value <= 0:
+        return fallback
+    return max(MIN_TABLE_HEIGHT, value)
+
+
+def render_table(df, height=None, max_rows: int = 500, **kwargs) -> None:
+    """
+    Render a DataFrame, using Streamlit's grid when pyarrow is available and a
+    self-contained HTML table when it is not.
+
+    `height` may be None, a number, or one of Streamlit's height sentinels;
+    anything invalid falls back to automatic sizing rather than raising.
+    """
+    resolved = safe_height(height)
     if ARROW_AVAILABLE:
-        st.dataframe(frame, hide_index=True, use_container_width=True, height=height)
+        st.dataframe(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            height=resolved,
+            **kwargs,
+        )
         return
-    st.markdown(df_to_html(frame, max_rows=max_rows, max_height=height or 430),
+    px = resolved if isinstance(resolved, int) else 430
+    st.markdown(df_to_html(df, max_rows=max_rows, max_height=px),
                 unsafe_allow_html=True)
 
 
 def render_bar_chart(series: pd.Series, height: int = 300, money: bool = False) -> None:
     """Horizontal bar chart with a pure-HTML fallback."""
+    height = safe_height(height, fallback=300)
     if ARROW_AVAILABLE:
         st.bar_chart(series, height=height)
         return
@@ -2783,9 +3132,11 @@ def render_bar_chart(series: pd.Series, height: int = 300, money: bool = False) 
 
 def render_line_chart(series: pd.Series, height: int = 300) -> None:
     """Time-series line chart with an inline-SVG fallback."""
+    height = safe_height(height, fallback=300)
     if ARROW_AVAILABLE:
         st.line_chart(series, height=height)
         return
+    height = height if isinstance(height, int) else 300
     values = [float(v) for v in series.tolist()]
     labels = [str(i) for i in series.index.tolist()]
     if not values:
@@ -2854,6 +3205,11 @@ def current_options() -> dict:
         "outlier_sigma": st.session_state["opt_outlier_sigma"],
         "flag_nulls": st.session_state["opt_flag_nulls"],
         "flag_outliers": st.session_state["opt_flag_outliers"],
+        "high_value": st.session_state["opt_high_value"],
+        "blacklist": st.session_state["opt_blacklist"],
+        "date_horizon": st.session_state["opt_date_horizon"],
+        "stale_days": st.session_state["opt_stale_days"],
+        "rules": dict(st.session_state["rule_enabled"]),
     }
 
 
@@ -3437,22 +3793,158 @@ def page_rule_settings() -> None:
                 value=float(st.session_state["opt_outlier_sigma"]), step=0.5)
 
     with st.container(border=True):
+        panel_title("Rule Thresholds",
+                    "Values the extended validation rules compare against. Each "
+                    "only applies when its rule is enabled and the file carries "
+                    "the columns it needs.")
+        t1, t2 = st.columns(2, gap="large")
+        with t1:
+            st.markdown('<div class="adp-section-h">Financial (R14, R15)</div>',
+                        unsafe_allow_html=True)
+            st.session_state["opt_high_value"] = st.number_input(
+                "R14 - flag transactions above this value (0 disables)",
+                min_value=0.0, step=10000.0,
+                value=float(st.session_state["opt_high_value"]))
+            st.caption("R15 reads a credit limit column from the file and compares "
+                       "it against each client's total exposure.")
+
+            st.markdown('<div class="adp-section-h" style="margin-top:14px;">'
+                        'Date boundaries (R22)</div>', unsafe_allow_html=True)
+            st.session_state["opt_date_horizon"] = st.number_input(
+                "Days into the future still considered valid",
+                min_value=0, max_value=365,
+                value=int(st.session_state["opt_date_horizon"]), step=1)
+            st.session_state["opt_stale_days"] = st.number_input(
+                "Flag entries older than this many days",
+                min_value=30, max_value=7300,
+                value=int(st.session_state["opt_stale_days"]), step=30)
+        with t2:
+            st.markdown('<div class="adp-section-h">Restricted entities (R20)</div>',
+                        unsafe_allow_html=True)
+            st.session_state["opt_blacklist"] = st.text_area(
+                "Blocked client IDs - one per line, or comma separated",
+                value=st.session_state["opt_blacklist"], height=190,
+                placeholder="MM-JHB-1042\nMM-CPT-0087")
+            blocked = [t.strip() for t in re.split(r"[,\n;]+",
+                       st.session_state["opt_blacklist"]) if t.strip()]
+            st.caption(f"{len(blocked)} entity id(s) on the blocklist. Matching is "
+                       "case-insensitive against the normalised Client ID.")
+
+    with st.container(border=True):
         panel_title("Active Rule Library",
-                    f"{len(RULE_LIBRARY)} rules ship with the engine.")
-        options = current_options()
-        enabled_map = {
-            "R04": options["flag_bad_dates"],
-            "R06": options["flag_missing_id"],
-            "R08": options["flag_missing_status"],
-            "R10": options["flag_nonpositive"],
-            "R12": options["bank_recon"] or options["flag_duplicates"] or options["drop_duplicates"],
-        }
-        table = pd.DataFrame([
-            {"Code": code, "Rule": label,
-             "State": "Enabled" if enabled_map.get(code, True) else "Disabled"}
-            for code, label, _ in RULE_LIBRARY
-        ])
-        render_table(table, height=48 + 35 * len(table))
+                    f"{len(RULE_LIBRARY)} rules ship with the engine. Filter the "
+                    "list, then switch individual rules on or off.")
+        render_rule_library()
+
+
+SEV_CLASS = {SEV_CRITICAL: "adp-badge-red", SEV_WARNING: "adp-badge-amber",
+             SEV_INFO: "adp-badge-slate"}
+CAT_CLASS = {CAT_FINANCE: "adp-badge-green", CAT_INTEGRITY: "adp-badge-navy",
+             CAT_CRM: "adp-badge-amber", CAT_LOGISTICS: "adp-badge-slate",
+             CAT_COMPLIANCE: "adp-badge-red"}
+
+
+def render_rule_library() -> None:
+    """Filterable, searchable rule library with a live toggle per rule."""
+    mapping = {}
+    if st.session_state.get("raw_df") is not None:
+        try:
+            _, mapping, _ = map_columns(st.session_state["raw_df"])
+        except Exception:
+            mapping = {}
+
+    f1, f2, f3, f4 = st.columns([1.15, 1.25, 0.95, 1.5], gap="medium")
+    with f1:
+        category = st.selectbox("Category", ["All Categories"] + RULE_CATEGORIES,
+                                key="lib_category")
+    with f2:
+        severity = st.selectbox("Severity", ["All Severities"] + RULE_SEVERITIES,
+                                key="lib_severity")
+    with f3:
+        status = st.selectbox("Rule status", ["All Statuses", "Enabled", "Disabled"],
+                              key="lib_status")
+    with f4:
+        query = st.text_input("Search", key="lib_search",
+                              placeholder="Search rule name or code\u2026")
+
+    enabled = st.session_state["rule_enabled"]
+    needle = (query or "").strip().lower()
+    rules = []
+    for rule in RULE_LIBRARY:
+        on = bool(enabled.get(rule["code"], rule["default"]))
+        if category != "All Categories" and rule["cat"] != category:
+            continue
+        if severity != "All Severities" and rule["sev"] != severity:
+            continue
+        if status == "Enabled" and not on:
+            continue
+        if status == "Disabled" and on:
+            continue
+        if needle and needle not in rule["name"].lower() and needle not in rule["code"].lower():
+            continue
+        rules.append(rule)
+
+    # Filled after the toggles are read, so the counts reflect this run rather
+    # than lagging a rerun behind the switch the operator just flipped.
+    tally_slot = st.empty()
+
+    if not rules:
+        on_count = sum(1 for r in RULE_LIBRARY if enabled.get(r["code"], r["default"]))
+        tally_slot.markdown(
+            f'<div style="margin:4px 0 12px;">'
+            f'<span class="adp-badge adp-badge-navy">0 SHOWN</span> '
+            f'<span class="adp-badge adp-badge-green">{on_count} ENABLED</span> '
+            f'<span class="adp-badge adp-badge-slate">'
+            f'{len(RULE_LIBRARY) - on_count} DISABLED</span></div>',
+            unsafe_allow_html=True,
+        )
+        st.info("No rules match these filters.")
+        return
+
+    widths = [0.5, 3.1, 1.5, 1.5, 1.0]
+    head = st.columns(widths, gap="small")
+    for col, label in zip(head, ("Code", "Rule name", "Category", "Severity", "State")):
+        with col:
+            st.markdown(f'<div class="adp-rule-head">{label}</div>',
+                        unsafe_allow_html=True)
+    st.markdown('<div class="adp-rule-rule"></div>', unsafe_allow_html=True)
+
+    for rule in rules:
+        code = rule["code"]
+        applicable = rule_applicable(rule, mapping) if mapping else True
+        c1, c2, c3, c4, c5 = st.columns(widths, gap="small")
+        with c1:
+            st.markdown(f'<div class="adp-rule-code">{code}</div>', unsafe_allow_html=True)
+        with c2:
+            note = "" if applicable else (
+                '<div class="adp-rule-na">Not applicable to the staged file</div>')
+            st.markdown(f'<div class="adp-rule-name">{esc(rule["name"])}</div>{note}',
+                        unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<span class="adp-badge {CAT_CLASS[rule["cat"]]}">'
+                        f'{esc(rule["cat"])}</span>', unsafe_allow_html=True)
+        with c4:
+            st.markdown(f'<span class="adp-badge {SEV_CLASS[rule["sev"]]}">'
+                        f'{esc(rule["sev"].split(" (")[0])}</span>',
+                        unsafe_allow_html=True)
+        with c5:
+            new_state = st.toggle(
+                code, value=bool(enabled.get(code, rule["default"])),
+                key=f"toggle_{code}", label_visibility="collapsed",
+                help=rule["sev"],
+            )
+            if new_state != enabled.get(code, rule["default"]):
+                enabled[code] = new_state
+
+    on_count = sum(1 for r in RULE_LIBRARY if enabled.get(r["code"], r["default"]))
+    tally_slot.markdown(
+        f'<div style="margin:4px 0 12px;">'
+        f'<span class="adp-badge adp-badge-navy">{len(rules)} SHOWN</span> '
+        f'<span class="adp-badge adp-badge-green">{on_count} ENABLED</span> '
+        f'<span class="adp-badge adp-badge-slate">'
+        f'{len(RULE_LIBRARY) - on_count} DISABLED</span></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def page_analysis_universal(clean, result) -> None:
