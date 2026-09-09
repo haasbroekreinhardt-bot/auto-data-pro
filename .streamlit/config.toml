@@ -12,6 +12,3 @@ font = "sans serif"
 
 [browser]
 gatherUsageStats = false
-
-[server]
-port = 8501
